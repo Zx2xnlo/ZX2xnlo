@@ -1,0 +1,334 @@
+-- [[ Rscripts Risk Notice ]]
+-- This script is not verified by rscripts.net. Deal with caution.
+--
+-- Stay safe:
+--   • Never log in on unofficial Roblox sites or lookalike domains.
+--   • Real Roblox links use roblox.com (check the .com ending).
+--   • Treat fake Roblox login / "claim reward" pages as phishing.
+-- [[ End Rscripts Risk Notice ]]
+
+local Luna = loadstring(game:HttpGet("https://raw.githubusercontent.com/Nebula-Softworks/Luna-Interface-Suite/refs/heads/main/source.lua", true))()
+
+--// SERVICES
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer
+
+--// SETTINGS
+local Enabled = true
+local ShowHighlight = false -- สวิตช์เปิด/ปิด กรอบสี Highlight
+local RGBHitboxEnabled = false -- สวิตช์เปิด/ปิด RGB เฉพาะกรอบ Hitbox
+
+local HitboxSize = 5
+local HitboxTransparency = 1
+
+local MIN_SIZE = 1
+local MAX_SIZE = 20
+
+local MIN_TRANSPARENCY = 0
+local MAX_TRANSPARENCY = 1
+
+local DefaultHighlightColor = Color3.fromRGB(0, 180, 180)
+local CurrentHitboxColor = DefaultHighlightColor
+
+--// CACHE
+local cache = {}
+local activeHighlights = {}
+
+--------------------------------------------------
+-- RESTORE ORIGINAL HEAD
+--------------------------------------------------
+
+local function resetHead(head, model)
+	if head and cache[head] then
+		local data = cache[head]
+
+		head.Size = data.Size
+		head.Transparency = data.Transparency
+		head.CanCollide = data.CanCollide
+		head.Material = data.Material
+		head.Color = data.Color
+		head.Massless = data.Massless
+
+		cache[head] = nil
+	end
+
+	if model then
+		local hl = model:FindFirstChild("HL")
+		if hl then
+			activeHighlights[hl] = nil
+			hl:Destroy()
+		end
+	end
+end
+
+--------------------------------------------------
+-- CLEAN CORPSE / RAGDOLL
+--------------------------------------------------
+
+local function cleanCorpse(model)
+	local hl = model:FindFirstChild("HL")
+	if hl then
+		activeHighlights[hl] = nil
+		hl:Destroy()
+	end
+
+	for _, v in ipairs(model:GetChildren()) do
+		if v:IsA("BasePart") then
+			v.CanCollide = false
+			if v.Name == "Head" or v.Name == "HeadHitbox" then
+				v.Size = Vector3.new(1.2, 1, 1)
+				v.Transparency = 0
+			end
+		end
+	end
+end
+
+--------------------------------------------------
+-- UPDATE HIGHLIGHT VISIBILITY
+--------------------------------------------------
+
+local function updateHighlightVisibility()
+	for _, model in ipairs(Workspace:GetChildren()) do
+		if model:IsA("Model") then
+			local hl = model:FindFirstChild("HL")
+			if hl then
+				hl.Enabled = ShowHighlight
+			end
+		end
+	end
+end
+
+--------------------------------------------------
+-- UPDATE HITBOX
+--------------------------------------------------
+
+local function update()
+	local valid = {}
+
+	if not Enabled then
+		for head, _ in pairs(cache) do
+			if head and head.Parent then
+				resetHead(head, head.Parent)
+			else
+				cache[head] = nil
+			end
+		end
+		return
+	end
+
+	pcall(function()
+		for _, model in ipairs(Workspace:GetChildren()) do
+			if model:IsA("Model") and model ~= LocalPlayer.Character and not Players:GetPlayerFromCharacter(model) then
+
+				if string.find(model.Name, "Corpse") or string.find(model.Name, "Ragdoll") then
+					cleanCorpse(model)
+				else
+					local head = model:FindFirstChild("HeadHitbox") or model:FindFirstChild("Head")
+					local humanoid = model:FindFirstChildWhichIsA("Humanoid")
+
+					if head and head:IsA("BasePart") and humanoid and humanoid.Health > 0 then
+						valid[head] = model
+
+						if not cache[head] then
+							cache[head] = {
+								Size = head.Size,
+								Transparency = head.Transparency,
+								CanCollide = head.CanCollide,
+								Material = head.Material,
+								Color = head.Color,
+								Massless = head.Massless
+							}
+						end
+
+						head.Massless = true
+						head.CanCollide = false
+						head.Anchored = false
+
+						head.Size = Vector3.new(HitboxSize, HitboxSize, HitboxSize)
+						head.Transparency = HitboxTransparency
+						head.Color = cache[head].Color
+
+						local highlight = model:FindFirstChild("HL")
+						if not highlight then
+							highlight = Instance.new("Highlight")
+							highlight.Name = "HL"
+							highlight.FillTransparency = 1
+							highlight.OutlineColor = CurrentHitboxColor
+							highlight.OutlineTransparency = 0.2
+							highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+							highlight.Enabled = ShowHighlight
+							highlight.Parent = model
+						else
+							highlight.Enabled = ShowHighlight
+						end
+
+						activeHighlights[highlight] = true
+					else
+						cleanCorpse(model)
+					end
+				end
+			end
+		end
+
+		for head, _ in pairs(cache) do
+			if not head or not head.Parent or not valid[head] then
+				resetHead(head, head and head.Parent)
+			end
+		end
+	end)
+end
+
+--------------------------------------------------
+-- KEEP COLLISION OFF (OPTIMIZED)
+--------------------------------------------------
+
+RunService.Stepped:Connect(function()
+	if not Enabled then return end
+	for head, _ in pairs(cache) do
+		if head and head.Parent and head.CanCollide then
+			head.CanCollide = false
+		end
+	end
+end)
+
+--------------------------------------------------
+-- SYSTEM RGB HIGHLIGHT (HIGH-PERFORMANCE)
+--------------------------------------------------
+
+local hue = 0
+RunService.RenderStepped:Connect(function(dt)
+	if RGBHitboxEnabled and ShowHighlight then
+		hue = (hue + dt * 0.3) % 1
+		CurrentHitboxColor = Color3.fromHSV(hue, 0.85, 1)
+
+		for hl, _ in pairs(activeHighlights) do
+			if hl and hl.Parent then
+				hl.OutlineColor = CurrentHitboxColor
+			else
+				activeHighlights[hl] = nil
+			end
+		end
+	end
+end)
+
+--------------------------------------------------
+-- LUNA UI
+--------------------------------------------------
+
+local Window = Luna:CreateWindow({
+	Name = "SAFE",
+	Subtitle = "// HITBOX DOMINATOR",
+	LogoID = "82795327169782",
+	LoadingEnabled = true,
+	LoadingTitle = "SAFE",
+	LoadingSubtitle = "stay safe. stay winning.",
+	ConfigSettings = {
+		RootFolder = nil,
+		ConfigFolder = "SAFE"
+	},
+	KeySystem = false
+})
+
+local Tab = Window:CreateTab({
+	Name = "Hitbox",
+	Icon = "view_in_ar",
+	ImageSource = "Material",
+	ShowTitle = true
+})
+
+Window:CreateHomeTab({
+	SupportedExecutors = {},
+	DiscordInvite = "1234",
+	Icon = 2,
+})
+
+Tab:CreateParagraph({
+	Title = "Info",
+	Text = "SAFE // HITBOX SYSTEM — ปรับค่าได้จากด้านล่าง ค่าถูกเซฟอัตโนมัติ"
+})
+
+Tab:CreateToggle({
+	Name = "Master Enabled",
+	Description = "เปิด/ปิดระบบ Hitbox ทั้งหมด",
+	CurrentValue = Enabled,
+	Callback = function(Value)
+		Enabled = Value
+		update()
+	end
+}, "MasterEnabled")
+
+Tab:CreateToggle({
+	Name = "Show Highlight",
+	Description = "แสดงกรอบสีรอบ Hitbox",
+	CurrentValue = ShowHighlight,
+	Callback = function(Value)
+		ShowHighlight = Value
+		updateHighlightVisibility()
+	end
+}, "ShowHighlight")
+
+Tab:CreateToggle({
+	Name = "RGB Hitbox Outline",
+	Description = "กรอบ Highlight ไล่สี RGB (ต้องเปิด Show Highlight)",
+	CurrentValue = RGBHitboxEnabled,
+	Callback = function(Value)
+		RGBHitboxEnabled = Value
+		if not Value then
+			CurrentHitboxColor = DefaultHighlightColor
+			for hl, _ in pairs(activeHighlights) do
+				if hl and hl.Parent then
+					hl.OutlineColor = CurrentHitboxColor
+				end
+			end
+		end
+	end
+}, "RGBHitbox")
+
+Tab:CreateSlider({
+	Name = "Hitbox Size",
+	Range = {MIN_SIZE, MAX_SIZE},
+	Increment = 0.1,
+	CurrentValue = HitboxSize,
+	Callback = function(Value)
+		HitboxSize = Value
+	end
+}, "HitboxSize")
+
+Tab:CreateSlider({
+	Name = "Transparency",
+	Range = {MIN_TRANSPARENCY, MAX_TRANSPARENCY},
+	Increment = 0.05,
+	CurrentValue = HitboxTransparency,
+	Callback = function(Value)
+		HitboxTransparency = Value
+	end
+}, "HitboxTransparency")
+
+Tab:CreateBind({
+	Name = "Master Toggle Bind",
+	Description = "กดเพื่อสลับเปิด/ปิด Master Enabled",
+	CurrentBind = "F",
+	HoldToInteract = false,
+	Callback = function(BindState)
+		Enabled = not Enabled
+		update()
+	end,
+	OnChangedCallback = function(Bind)
+	end,
+}, "MasterBind")
+
+--------------------------------------------------
+-- INITIALIZE & MAIN LOOP
+--------------------------------------------------
+
+update()
+
+task.spawn(function()
+	while true do
+		update()
+		task.wait(0.25)
+	end
+end)
