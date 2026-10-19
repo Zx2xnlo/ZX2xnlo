@@ -52,6 +52,11 @@ local Defaults = {
     HitboxTransparencyPct = 100,
     FreeKorblox = false,
     HeadlessEnabled = false,
+    ESPEnabled = false,
+    ESPSkeleton = true,
+    ESPHealth = true,
+    ESPFoot = true,
+    ESPDistance = 500,
     SoundEnabled = true,
     StatsVisible = false,
     UIScalePercent = 80,
@@ -490,6 +495,9 @@ local function Icon(parent, kind, x, y)
     elseif kind == "dress" then
         rect(6, 1, 6, 6, 3)
         rect(3, 9, 12, 8, 3)
+    elseif kind == "eye" then
+        rect(2, 5, 14, 8, 4)
+        rect(7, 7, 4, 4, 2)
     elseif kind == "close" then
         rect(1, 8, 16, 2, 1, 45)
         rect(1, 8, 16, 2, 1, -45)
@@ -2219,7 +2227,7 @@ local function Toggle(page, opts)
 
     local state = Config[opts.key] == true
 
-    if page == Pages["Functions"] or page == Pages["Dress"] then
+    if page == Pages["Functions"] or page == Pages["Dress"] or page == Pages["ESP"] then
         FuncToggles[#FuncToggles + 1] = function()
             return state
         end
@@ -3087,13 +3095,27 @@ do
     local function resetHead(head, model)
         if head and cache[head] then
             local data = cache[head]
+            cache[head] = nil
+            if data.Conns then
+                for _, c in ipairs(data.Conns) do
+                    pcall(function()
+                        c:Disconnect()
+                    end)
+                end
+            end
+            if data.Decals then
+                for d, t in pairs(data.Decals) do
+                    pcall(function()
+                        d.Transparency = t
+                    end)
+                end
+            end
             head.Size = data.Size
             head.Transparency = data.Transparency
             head.CanCollide = data.CanCollide
             head.Material = data.Material
             head.Color = data.Color
             head.Massless = data.Massless
-            cache[head] = nil
         end
         if model then
             local hl = model:FindFirstChild("HL")
@@ -3176,6 +3198,35 @@ do
                             head.Transparency = HitboxTransparency
                             head.Color = cache[head].Color
 
+                            -- face decals / textures follow the same transparency
+                            local data = cache[head]
+                            data.Decals = data.Decals or {}
+                            for _, d in ipairs(head:GetChildren()) do
+                                if d:IsA("Decal") or d:IsA("Texture") then
+                                    if data.Decals[d] == nil then
+                                        data.Decals[d] = d.Transparency
+                                    end
+                                    d.Transparency = HitboxTransparency
+                                end
+                            end
+
+                            -- re-apply instantly if the game changes the head again
+                            if not data.Conns then
+                                data.Conns = {
+                                    head:GetPropertyChangedSignal("Transparency"):Connect(function()
+                                        if Enabled and cache[head] and head.Transparency ~= HitboxTransparency then
+                                            head.Transparency = HitboxTransparency
+                                        end
+                                    end),
+                                    head:GetPropertyChangedSignal("Size"):Connect(function()
+                                        local want = Vector3.new(HitboxSize, HitboxSize, HitboxSize)
+                                        if Enabled and cache[head] and head.Size ~= want then
+                                            head.Size = want
+                                        end
+                                    end),
+                                }
+                            end
+
                             local highlight = model:FindFirstChild("HL")
                             if not highlight then
                                 highlight = Instance.new("Highlight")
@@ -3214,6 +3265,31 @@ do
         for head, _ in pairs(cache) do
             if head and head.Parent and head.CanCollide then
                 head.CanCollide = false
+            end
+        end
+    end))
+
+    -- enforce every frame so the game cannot show the real head when you get close
+    Track(RunService.RenderStepped:Connect(function()
+        if not Enabled then
+            return
+        end
+        local want = Vector3.new(HitboxSize, HitboxSize, HitboxSize)
+        for head, data in pairs(cache) do
+            if head and head.Parent then
+                if head.Size ~= want then
+                    head.Size = want
+                end
+                if head.Transparency ~= HitboxTransparency then
+                    head.Transparency = HitboxTransparency
+                end
+                if data.Decals then
+                    for d, _ in pairs(data.Decals) do
+                        if d.Parent and d.Transparency ~= HitboxTransparency then
+                            d.Transparency = HitboxTransparency
+                        end
+                    end
+                end
             end
         end
     end))
@@ -3461,6 +3537,345 @@ Toggle(Dress, {
 })
 
 --==================================================
+-- ESP (logic)
+--==================================================
+
+do
+    local Workspace = game:GetService("Workspace")
+
+    local Enabled = Config.ESPEnabled
+    local ShowSkeleton = Config.ESPSkeleton
+    local ShowHealth = Config.ESPHealth
+    local ShowFoot = Config.ESPFoot
+    local MaxDistance = Config.ESPDistance
+
+    local hasDrawing = type(Drawing) == "table" and type(Drawing.new) == "function"
+
+    local R15_PAIRS = {
+        { "Head", "UpperTorso" }, { "UpperTorso", "LowerTorso" },
+        { "UpperTorso", "LeftUpperArm" }, { "LeftUpperArm", "LeftLowerArm" }, { "LeftLowerArm", "LeftHand" },
+        { "UpperTorso", "RightUpperArm" }, { "RightUpperArm", "RightLowerArm" }, { "RightLowerArm", "RightHand" },
+        { "LowerTorso", "LeftUpperLeg" }, { "LeftUpperLeg", "LeftLowerLeg" }, { "LeftLowerLeg", "LeftFoot" },
+        { "LowerTorso", "RightUpperLeg" }, { "RightUpperLeg", "RightLowerLeg" }, { "RightLowerLeg", "RightFoot" },
+    }
+    local R6_PAIRS = {
+        { "Head", "Torso" }, { "Torso", "Left Arm" }, { "Torso", "Right Arm" },
+        { "Torso", "Left Leg" }, { "Torso", "Right Leg" },
+    }
+
+    local tracked = {}  -- list of { model, root, hum, pairs }
+    local drawn = {}    -- [model] = drawings
+
+    local function newLine(color, thickness)
+        local l = Drawing.new("Line")
+        l.Color = color
+        l.Thickness = thickness
+        l.Transparency = 1
+        l.Visible = false
+        return l
+    end
+
+    local function makeDrawings(entry)
+        local d = { lines = {} }
+        for i = 1, #entry.pairs do
+            d.lines[i] = newLine(Color3.new(1, 1, 1), 1.5)
+        end
+        d.hpBg = newLine(Color3.fromRGB(20, 20, 20), 4)
+        d.hp = newLine(Color3.fromRGB(60, 255, 90), 2)
+        local q = Drawing.new("Quad")
+        q.Color = Color3.fromRGB(255, 40, 40)
+        q.Filled = true
+        q.Thickness = 1
+        q.Transparency = 0.55
+        q.Visible = false
+        d.foot = q
+        return d
+    end
+
+    local function hideDrawings(d)
+        for _, l in ipairs(d.lines) do
+            l.Visible = false
+        end
+        d.hpBg.Visible = false
+        d.hp.Visible = false
+        d.foot.Visible = false
+    end
+
+    local function removeDrawings(d)
+        pcall(function()
+            for _, l in ipairs(d.lines) do
+                l:Remove()
+            end
+            d.hpBg:Remove()
+            d.hp:Remove()
+            d.foot:Remove()
+        end)
+    end
+
+    local function clearAll()
+        for model, d in pairs(drawn) do
+            removeDrawings(d)
+            drawn[model] = nil
+        end
+    end
+
+    local function scan()
+        local list = {}
+        for _, model in ipairs(Workspace:GetChildren()) do
+            if model:IsA("Model") and model ~= LocalPlayer.Character and not Players:GetPlayerFromCharacter(model) then
+                if not (string.find(model.Name, "Corpse") or string.find(model.Name, "Ragdoll")) then
+                    local hum = model:FindFirstChildWhichIsA("Humanoid")
+                    local root = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+                    if hum and root and root:IsA("BasePart") and hum.Health > 0 then
+                        list[#list + 1] = {
+                            model = model,
+                            root = root,
+                            hum = hum,
+                            pairs = model:FindFirstChild("UpperTorso") and R15_PAIRS or R6_PAIRS,
+                        }
+                    end
+                end
+            end
+        end
+        tracked = list
+
+        local alive = {}
+        for _, e in ipairs(list) do
+            alive[e.model] = true
+        end
+        for model, d in pairs(drawn) do
+            if not alive[model] then
+                removeDrawings(d)
+                drawn[model] = nil
+            end
+        end
+    end
+
+    local function groundY(model, root)
+        local y
+        for _, n in ipairs({ "LeftFoot", "RightFoot", "Left Leg", "Right Leg" }) do
+            local part = model:FindFirstChild(n)
+            if part and part:IsA("BasePart") then
+                local b = part.Position.Y - part.Size.Y / 2
+                if not y or b < y then
+                    y = b
+                end
+            end
+        end
+        return y or (root.Position.Y - 3)
+    end
+
+    local function drawEntry(cam, e)
+        local model, root, hum = e.model, e.root, e.hum
+        if not (model.Parent and root.Parent and hum.Parent) or hum.Health <= 0 then
+            if drawn[model] then
+                hideDrawings(drawn[model])
+            end
+            return
+        end
+
+        local d = drawn[model]
+        if not d then
+            d = makeDrawings(e)
+            drawn[model] = d
+        end
+
+        local camPos = cam.CFrame.Position
+        local _, onScreen = cam:WorldToViewportPoint(root.Position)
+        if not onScreen or (camPos - root.Position).Magnitude > MaxDistance then
+            hideDrawings(d)
+            return
+        end
+
+        -- skeleton
+        for i, pr in ipairs(e.pairs) do
+            local line = d.lines[i]
+            local a = model:FindFirstChild(pr[1])
+            local b = model:FindFirstChild(pr[2])
+            if ShowSkeleton and a and b then
+                local pa = cam:WorldToViewportPoint(a.Position)
+                local pb = cam:WorldToViewportPoint(b.Position)
+                if pa.Z > 0 and pb.Z > 0 then
+                    line.From = Vector2.new(pa.X, pa.Y)
+                    line.To = Vector2.new(pb.X, pb.Y)
+                    line.Visible = true
+                else
+                    line.Visible = false
+                end
+            else
+                line.Visible = false
+            end
+        end
+
+        local gy = groundY(model, root)
+        local rp = root.Position
+
+        -- foot marker (flat square on the ground)
+        if ShowFoot then
+            local h = 1.6
+            local c1 = cam:WorldToViewportPoint(Vector3.new(rp.X - h, gy, rp.Z - h))
+            local c2 = cam:WorldToViewportPoint(Vector3.new(rp.X + h, gy, rp.Z - h))
+            local c3 = cam:WorldToViewportPoint(Vector3.new(rp.X + h, gy, rp.Z + h))
+            local c4 = cam:WorldToViewportPoint(Vector3.new(rp.X - h, gy, rp.Z + h))
+            if c1.Z > 0 and c2.Z > 0 and c3.Z > 0 and c4.Z > 0 then
+                d.foot.PointA = Vector2.new(c1.X, c1.Y)
+                d.foot.PointB = Vector2.new(c2.X, c2.Y)
+                d.foot.PointC = Vector2.new(c3.X, c3.Y)
+                d.foot.PointD = Vector2.new(c4.X, c4.Y)
+                d.foot.Visible = true
+            else
+                d.foot.Visible = false
+            end
+        else
+            d.foot.Visible = false
+        end
+
+        -- health bar (vertical line on the left side)
+        if ShowHealth then
+            local headPart = model:FindFirstChild("Head")
+            local topY = (headPart and headPart.Position.Y or (rp.Y + 2.5)) + 0.7
+            local right = cam.CFrame.RightVector * 2.2
+            local bottom = cam:WorldToViewportPoint(Vector3.new(rp.X, gy, rp.Z) - right)
+            local top = cam:WorldToViewportPoint(Vector3.new(rp.X, topY, rp.Z) - right)
+            if bottom.Z > 0 and top.Z > 0 then
+                local pBottom = Vector2.new(bottom.X, bottom.Y)
+                local pTop = Vector2.new(top.X, top.Y)
+                local frac = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+                d.hpBg.From = pBottom
+                d.hpBg.To = pTop
+                d.hpBg.Visible = true
+                d.hp.From = pBottom
+                d.hp.To = pBottom:Lerp(pTop, frac)
+                d.hp.Visible = true
+            else
+                d.hpBg.Visible = false
+                d.hp.Visible = false
+            end
+        else
+            d.hpBg.Visible = false
+            d.hp.Visible = false
+        end
+    end
+
+    if hasDrawing then
+        Track(RunService.RenderStepped:Connect(function()
+            if not Enabled then
+                return
+            end
+            local cam = Workspace.CurrentCamera
+            if not cam then
+                return
+            end
+            for _, e in ipairs(tracked) do
+                pcall(drawEntry, cam, e)
+            end
+        end))
+
+        task.spawn(function()
+            while Screen.Parent do
+                if Enabled then
+                    pcall(scan)
+                end
+                task.wait(0.5)
+            end
+        end)
+    end
+
+    function HB.setESP(v)
+        if v and not hasDrawing then
+            Toast("ESP needs the Drawing API (not supported here)")
+            Enabled = false
+            return
+        end
+        Enabled = v
+        if v then
+            pcall(scan)
+        else
+            tracked = {}
+            clearAll()
+        end
+    end
+    function HB.setESPSkeleton(v)
+        ShowSkeleton = v
+    end
+    function HB.setESPHealth(v)
+        ShowHealth = v
+    end
+    function HB.setESPFoot(v)
+        ShowFoot = v
+    end
+    function HB.setESPDistance(v)
+        MaxDistance = v
+    end
+    function HB.unloadESP()
+        Enabled = false
+        tracked = {}
+        clearAll()
+    end
+end
+
+--==================================================
+-- ESP PAGE
+--==================================================
+
+do
+    local ESPPage = MakePage("ESP", "ESP", "See NPCs through walls  •  Needs Drawing API")
+
+    Section(ESPPage, "Main")
+
+    Toggle(ESPPage, {
+        key = "ESPEnabled",
+        title = "ESP Enabled",
+        desc = "Draw skeleton, health and foot marker on NPCs",
+        callback = function(v)
+            HB.setESP(v)
+        end,
+    })
+
+    Section(ESPPage, "Elements")
+
+    Toggle(ESPPage, {
+        key = "ESPSkeleton",
+        title = "Skeleton",
+        desc = "White bone lines on the body",
+        callback = function(v)
+            HB.setESPSkeleton(v)
+        end,
+    })
+
+    Toggle(ESPPage, {
+        key = "ESPHealth",
+        title = "Health Line",
+        desc = "Green vertical line that shrinks with health",
+        callback = function(v)
+            HB.setESPHealth(v)
+        end,
+    })
+
+    Toggle(ESPPage, {
+        key = "ESPFoot",
+        title = "Foot Marker",
+        desc = "Red marker on the ground under each NPC",
+        callback = function(v)
+            HB.setESPFoot(v)
+        end,
+    })
+
+    Slider(ESPPage, {
+        key = "ESPDistance",
+        title = "Max Distance",
+        desc = "Hide NPCs farther than this",
+        min = 50,
+        max = 2000,
+        step = 50,
+        suffix = " st",
+        callback = function(v)
+            HB.setESPDistance(v)
+        end,
+    })
+end
+
+--==================================================
 -- SETTINGS
 --==================================================
 
@@ -3603,6 +4018,7 @@ do
         end)
         pcall(HB.unloadHitbox)
         pcall(HB.unloadDress)
+        pcall(HB.unloadESP)
 
         -- disconnect any open color picker listeners
         pcall(function()
@@ -3631,6 +4047,7 @@ CatGroup("MAIN")
 Category("Home", "Home", "grid")
 Category("Hitbox", "Functions", "sliders")
 Category("Get Dressed", "Dress", "dress")
+Category("ESP", "ESP", "eye")
 CatGroup("SYSTEM")
 Category("Settings", "Settings", "ring")
 
