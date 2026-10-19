@@ -3207,7 +3207,7 @@ do
     end
 
     -- keep collision off
-    RunService.Stepped:Connect(function()
+    Track(RunService.Stepped:Connect(function()
         if not Enabled then
             return
         end
@@ -3216,11 +3216,11 @@ do
                 head.CanCollide = false
             end
         end
-    end)
+    end))
 
     -- rainbow outline
     local hue = 0
-    RunService.RenderStepped:Connect(function(dt)
+    Track(RunService.RenderStepped:Connect(function(dt)
         if RGBHitboxEnabled and ShowHighlight then
             hue = (hue + dt * 0.3) % 1
             CurrentHitboxColor = Color3.fromHSV(hue, 0.85, 1)
@@ -3232,7 +3232,7 @@ do
                 end
             end
         end
-    end)
+    end))
 
     -- setters used by the UI
     function HB.setEnabled(v)
@@ -3261,9 +3261,22 @@ do
         HitboxTransparency = v
     end
 
+    -- full cleanup used by the Unload button
+    function HB.unloadHitbox()
+        Enabled = false
+        RGBHitboxEnabled = false
+        pcall(update)
+        for hl, _ in pairs(activeHighlights) do
+            pcall(function()
+                hl:Destroy()
+            end)
+        end
+        activeHighlights = {}
+    end
+
     update()
     task.spawn(function()
-        while true do
+        while Screen.Parent do
             update()
             task.wait(0.25)
         end
@@ -3341,7 +3354,7 @@ do
     local Headless = Config.HeadlessEnabled
     local saved = {}
 
-    RunService.Heartbeat:Connect(function()
+    local function step()
         pcall(function()
             local char = LocalPlayer.Character
             if not char then
@@ -3402,7 +3415,16 @@ do
                 end
             end
         end)
-    end)
+    end
+
+    Track(RunService.Heartbeat:Connect(step))
+
+    -- restore the avatar and stop (used by the Unload button)
+    function HB.unloadDress()
+        Korblox = false
+        Headless = false
+        step()
+    end
 
     function HB.setKorblox(v)
         Korblox = v
@@ -3553,6 +3575,53 @@ ResetRow.MouseButton1Click:Connect(function()
     SaveConfig(true)
     Toast("Settings reset")
 end)
+
+do
+    local UnloadRow = Panel(Settings, UDim2.new(1, 0, 0, 50), "TextButton")
+    HoverRow(UnloadRow)
+    local UnloadLabel = Text(UnloadRow, "Unload script (close everything)", 12, FNT.M, RGB(235, 90, 100))
+    UnloadLabel.Position = UDim2.fromOffset(16, 0)
+    UnloadLabel.Size = UDim2.new(1, -32, 1, 0)
+
+    local armed = false
+    UnloadRow.MouseButton1Click:Connect(function()
+        if not armed then
+            armed = true
+            UnloadLabel.Text = "Press again to unload the script"
+            task.delay(3, function()
+                armed = false
+                if UnloadLabel.Parent then
+                    UnloadLabel.Text = "Unload script (close everything)"
+                end
+            end)
+            return
+        end
+
+        -- save settings, then restore the game state
+        pcall(function()
+            SaveConfig(true)
+        end)
+        pcall(HB.unloadHitbox)
+        pcall(HB.unloadDress)
+
+        -- disconnect any open color picker listeners
+        pcall(function()
+            for _, c in ipairs(PaletteConns) do
+                c:Disconnect()
+            end
+        end)
+
+        -- destroy every GUI (this also disconnects all tracked connections)
+        pcall(function()
+            for _, name in ipairs({ "LRIS_Stats", "LRIS_Floating", "LRIS_UI" }) do
+                local g = PlayerGui:FindFirstChild(name)
+                if g then
+                    g:Destroy()
+                end
+            end
+        end)
+    end)
+end
 
 --==================================================
 -- SIDEBAR CATEGORIES
