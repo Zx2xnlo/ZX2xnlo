@@ -50,6 +50,8 @@ local Defaults = {
     RGBHitboxEnabled = false,
     HitboxSize = 5,
     HitboxTransparencyPct = 100,
+    FreeKorblox = false,
+    HeadlessEnabled = false,
     SoundEnabled = true,
     StatsVisible = false,
     UIScalePercent = 80,
@@ -485,6 +487,9 @@ local function Icon(parent, kind, x, y)
         rect(1, 2, 16, 2, 1)
         rect(1, 8, 11, 2, 1)
         rect(1, 14, 14, 2, 1)
+    elseif kind == "dress" then
+        rect(6, 1, 6, 6, 3)
+        rect(3, 9, 12, 8, 3)
     elseif kind == "close" then
         rect(1, 8, 16, 2, 1, 45)
         rect(1, 8, 16, 2, 1, -45)
@@ -2214,7 +2219,7 @@ local function Toggle(page, opts)
 
     local state = Config[opts.key] == true
 
-    if page == Pages["Functions"] then
+    if page == Pages["Functions"] or page == Pages["Dress"] then
         FuncToggles[#FuncToggles + 1] = function()
             return state
         end
@@ -3328,6 +3333,112 @@ Toggle(Functions, {
 })
 
 --==================================================
+-- GET DRESSED (logic)
+--==================================================
+
+do
+    local Korblox = Config.FreeKorblox
+    local Headless = Config.HeadlessEnabled
+    local saved = {}
+
+    RunService.Heartbeat:Connect(function()
+        pcall(function()
+            local char = LocalPlayer.Character
+            if not char then
+                return
+            end
+            if saved.Char ~= char then
+                saved = { Char = char }
+            end
+
+            local head = char:FindFirstChild("Head")
+            local upperLeg = char:FindFirstChild("RightUpperLeg")
+            local lowerLeg = char:FindFirstChild("RightLowerLeg")
+            local foot = char:FindFirstChild("RightFoot")
+
+            -- Headless
+            if head then
+                if Headless then
+                    if saved.HeadTransparency == nil then
+                        saved.HeadTransparency = head.Transparency
+                    end
+                    head.Transparency = 1
+                    local face = head:FindFirstChild("face")
+                    if face then
+                        saved.Face = face:Clone()
+                        face:Destroy()
+                    end
+                elseif saved.HeadTransparency ~= nil then
+                    head.Transparency = saved.HeadTransparency
+                    saved.HeadTransparency = nil
+                    if saved.Face and not head:FindFirstChild("face") then
+                        saved.Face.Parent = head
+                    end
+                    saved.Face = nil
+                end
+            end
+
+            -- Free Korblox
+            if upperLeg and lowerLeg and foot then
+                if Korblox then
+                    if not saved.Leg then
+                        saved.Leg = {
+                            MeshId = upperLeg.MeshId,
+                            TextureID = upperLeg.TextureID,
+                            LowerTransparency = lowerLeg.Transparency,
+                            FootTransparency = foot.Transparency,
+                        }
+                    end
+                    upperLeg.MeshId = "rbxassetid://9598310133"
+                    upperLeg.TextureID = "rbxassetid://902843398"
+                    lowerLeg.Transparency = 1
+                    foot.Transparency = 1
+                elseif saved.Leg then
+                    upperLeg.MeshId = saved.Leg.MeshId
+                    upperLeg.TextureID = saved.Leg.TextureID
+                    lowerLeg.Transparency = saved.Leg.LowerTransparency
+                    foot.Transparency = saved.Leg.FootTransparency
+                    saved.Leg = nil
+                end
+            end
+        end)
+    end)
+
+    function HB.setKorblox(v)
+        Korblox = v
+    end
+    function HB.setHeadless(v)
+        Headless = v
+    end
+end
+
+--==================================================
+-- GET DRESSED PAGE
+--==================================================
+
+local Dress = MakePage("Dress", "Get Dressed", "Free avatar items  •  Visible only to you")
+
+Section(Dress, "Avatar")
+
+Toggle(Dress, {
+    key = "FreeKorblox",
+    title = "Free Korblox",
+    desc = "Gives your right leg the Korblox look",
+    callback = function(v)
+        HB.setKorblox(v)
+    end,
+})
+
+Toggle(Dress, {
+    key = "HeadlessEnabled",
+    title = "Headless",
+    desc = "Hides your head and face",
+    callback = function(v)
+        HB.setHeadless(v)
+    end,
+})
+
+--==================================================
 -- SETTINGS
 --==================================================
 
@@ -3450,6 +3561,7 @@ end)
 CatGroup("MAIN")
 Category("Home", "Home", "grid")
 Category("Hitbox", "Functions", "sliders")
+Category("Get Dressed", "Dress", "dress")
 CatGroup("SYSTEM")
 Category("Settings", "Settings", "ring")
 
