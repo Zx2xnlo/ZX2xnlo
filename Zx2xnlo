@@ -59,6 +59,7 @@ local Defaults = {
     ESPDistance = 500,
     SoundEnabled = true,
     UIToggleKey = "RightShift",
+    AntiAFK = true,
     StatsVisible = false,
     UIScalePercent = 80,
     LastTab = "Home",
@@ -3899,6 +3900,29 @@ do
 end
 
 --==================================================
+-- ANTI AFK (logic)
+--==================================================
+
+do
+    local VirtualUser = game:GetService("VirtualUser")
+    local on = Config.AntiAFK
+
+    Track(LocalPlayer.Idled:Connect(function()
+        if not on then
+            return
+        end
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new())
+        end)
+    end))
+
+    function HB.setAntiAFK(v)
+        on = v
+    end
+end
+
+--==================================================
 -- SETTINGS
 --==================================================
 
@@ -3918,6 +3942,15 @@ Toggle(Settings, {
     desc = "Small draggable stats box",
     callback = function(v)
         StatsGui.Enabled = v
+    end,
+})
+
+Toggle(Settings, {
+    key = "AntiAFK",
+    title = "Anti AFK",
+    desc = "Stops Roblox from kicking you for being idle",
+    callback = function(v)
+        HB.setAntiAFK(v)
     end,
 })
 
