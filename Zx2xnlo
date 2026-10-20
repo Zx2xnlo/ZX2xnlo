@@ -56,6 +56,7 @@ local Defaults = {
     ESPSkeleton = true,
     ESPHealth = true,
     ESPFoot = true,
+    ESPHumanoidHP = false,
     ESPDistance = 500,
     SoundEnabled = true,
     UIToggleKey = "RightShift",
@@ -3360,6 +3361,10 @@ do
     function HB.setTransparency(v)
         HitboxTransparency = v
     end
+    function HB.origHeadSize(head)
+        local data = cache[head]
+        return data and data.Size or nil
+    end
 
     -- full cleanup used by the Unload button
     function HB.unloadHitbox()
@@ -3571,6 +3576,7 @@ do
     local ShowSkeleton = Config.ESPSkeleton
     local ShowHealth = Config.ESPHealth
     local ShowFoot = Config.ESPFoot
+    local HumanoidOnly = Config.ESPHumanoidHP
     local MaxDistance = Config.ESPDistance
 
     local hasDrawing = type(Drawing) == "table" and type(Drawing.new) == "function"
@@ -3606,6 +3612,15 @@ do
         end
         d.hpBg = newLine(Color3.fromRGB(20, 20, 20), 4)
         d.hp = newLine(Color3.fromRGB(60, 255, 90), 2)
+        local t = Drawing.new("Text")
+        t.Size = 13
+        t.Center = false
+        t.Outline = true
+        t.Color = Color3.fromRGB(255, 255, 255)
+        t.Transparency = 1
+        t.Text = ""
+        t.Visible = false
+        d.hpText = t
         local q = Drawing.new("Quad")
         q.Color = Color3.fromRGB(255, 40, 40)
         q.Filled = true
@@ -3622,6 +3637,7 @@ do
         end
         d.hpBg.Visible = false
         d.hp.Visible = false
+        d.hpText.Visible = false
         d.foot.Visible = false
     end
 
@@ -3632,6 +3648,7 @@ do
             end
             d.hpBg:Remove()
             d.hp:Remove()
+            d.hpText:Remove()
             d.foot:Remove()
         end)
     end
@@ -3673,6 +3690,60 @@ do
                 drawn[model] = nil
             end
         end
+    end
+
+    -- many games keep NPC health outside Humanoid.Health (Attributes or Value objects)
+    local HP_NAMES = { "Health", "HP", "CurrentHealth", "CurHealth", "Hp", "health", "hp" }
+    local MAX_NAMES = { "MaxHealth", "MaxHP", "MaxHp", "maxHealth", "maxHp", "Max_Health" }
+
+    local function findSource(model, hum, names)
+        for _, holder in ipairs({ model, hum }) do
+            for _, n in ipairs(names) do
+                if type(holder:GetAttribute(n)) == "number" then
+                    return function()
+                        return holder:GetAttribute(n)
+                    end
+                end
+                local v = holder:FindFirstChild(n)
+                if v and (v:IsA("NumberValue") or v:IsA("IntValue")) then
+                    return function()
+                        return v.Value
+                    end
+                end
+            end
+        end
+        return nil
+    end
+
+    local function readHealth(d, model, hum)
+        if HumanoidOnly then
+            return hum.Health, hum.MaxHealth
+        end
+        if d.hpGet == nil or (d.hpGet == false and tick() - (d.hpCheck or 0) > 3) then
+            d.hpCheck = tick()
+            d.hpGet = findSource(model, hum, HP_NAMES) or false
+            d.maxGet = findSource(model, hum, MAX_NAMES) or false
+        end
+
+        local hp, maxHp
+        if d.hpGet then
+            local ok, v = pcall(d.hpGet)
+            hp = ok and tonumber(v) or nil
+            if hp and d.maxGet then
+                local okm, m = pcall(d.maxGet)
+                maxHp = okm and tonumber(m) or nil
+            end
+            if hp and not maxHp then
+                d.maxSeen = math.max(d.maxSeen or 0, hp)
+                maxHp = d.maxSeen
+            end
+        end
+
+        if not hp then
+            hp = hum.Health
+            maxHp = hum.MaxHealth
+        end
+        return hp, maxHp
     end
 
     local function groundY(model, root)
@@ -3754,17 +3825,43 @@ do
             d.foot.Visible = false
         end
 
-        -- health bar (vertical line on the left side)
+        -- health bar (perfectly vertical line on the left of the NPC)
         if ShowHealth then
-            local headPart = model:FindFirstChild("Head")
-            local topY = (headPart and headPart.Position.Y or (rp.Y + 2.5)) + 0.7
-            local right = cam.CFrame.RightVector * 2.2
-            local bottom = cam:WorldToViewportPoint(Vector3.new(rp.X, gy, rp.Z) - right)
-            local top = cam:WorldToViewportPoint(Vector3.new(rp.X, topY, rp.Z) - right)
-            if bottom.Z > 0 and top.Z > 0 then
-                local pBottom = Vector2.new(bottom.X, bottom.Y)
-                local pTop = Vector2.new(top.X, top.Y)
-                local frac = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+            local headPart = model:FindFirstChild("Head") or model:FindFirstChild("HeadHitbox")
+            local topY
+            if headPart and headPart:IsA("BasePart") then
+                -- use the real head size, not the enlarged hitbox size
+                local sz = HB.origHeadSize(headPart) or headPart.Size
+                topY = headPart.Position.Y + sz.Y / 2
+            else
+                topY = rp.Y + 2.5
+            end
+
+            local top = cam:WorldToViewportPoint(Vector3.new(rp.X, topY, rp.Z))
+            local bottom = cam:WorldToViewportPoint(Vector3.new(rp.X, gy, rp.Z))
+            if top.Z > 0 and bottom.Z > 0 then
+                local height = math.abs(bottom.Y - top.Y)
+                local x = (top.X + bottom.X) / 2 - math.max(height * 0.28, 6)
+                local pBottom = Vector2.new(x, bottom.Y)
+                local pTop = Vector2.new(x, top.Y)
+
+                local hp, maxHp = readHealth(d, model, hum)
+                local frac = 1
+                if maxHp and maxHp > 0 and maxHp < 1e9 then
+                    frac = math.clamp(hp / maxHp, 0, 1)
+                end
+                if maxHp and maxHp > 0 and maxHp < 1e9 then
+                    d.hpText.Text = string.format("%d/%d", math.floor(hp + 0.5), math.floor(maxHp + 0.5))
+                else
+                    d.hpText.Text = tostring(math.floor(hp + 0.5))
+                end
+                local okb, tb = pcall(function()
+                    return d.hpText.TextBounds
+                end)
+                local tw = (okb and typeof(tb) == "Vector2") and tb.X or 0
+                d.hpText.Position = Vector2.new(x - tw / 2, top.Y - 16)
+                d.hpText.Visible = true
+
                 d.hpBg.From = pBottom
                 d.hpBg.To = pTop
                 d.hpBg.Visible = true
@@ -3774,10 +3871,12 @@ do
             else
                 d.hpBg.Visible = false
                 d.hp.Visible = false
+                d.hpText.Visible = false
             end
         else
             d.hpBg.Visible = false
             d.hp.Visible = false
+            d.hpText.Visible = false
         end
     end
 
@@ -3827,6 +3926,9 @@ do
     end
     function HB.setESPFoot(v)
         ShowFoot = v
+    end
+    function HB.setESPHumanoidHP(v)
+        HumanoidOnly = v
     end
     function HB.setESPDistance(v)
         MaxDistance = v
@@ -3882,6 +3984,15 @@ do
         desc = "Red marker on the ground under each NPC",
         callback = function(v)
             HB.setESPFoot(v)
+        end,
+    })
+
+    Toggle(ESPPage, {
+        key = "ESPHumanoidHP",
+        title = "Humanoid Health Only",
+        desc = "Use the normal Humanoid health (turn on if the number looks wrong)",
+        callback = function(v)
+            HB.setESPHumanoidHP(v)
         end,
     })
 
