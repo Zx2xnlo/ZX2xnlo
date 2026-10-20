@@ -58,6 +58,7 @@ local Defaults = {
     ESPFoot = true,
     ESPDistance = 500,
     SoundEnabled = true,
+    UIToggleKey = "RightShift",
     StatsVisible = false,
     UIScalePercent = 80,
     LastTab = "Home",
@@ -2333,9 +2334,18 @@ local function Slider(page, opts)
     Corner(pill, 11)
     Bind(pill, "BackgroundColor3", "Surface2")
     Bind(Stroke(pill, Theme.Accent, 1, 0.6), "Color", "Accent")
-    local val = Text(row, "", 12, FNT.B, "Accent", Enum.TextXAlignment.Center)
-    val.Position = UDim2.new(1, -98, 0, 9)
-    val.Size = UDim2.fromOffset(82, 22)
+    local val = New("TextBox", {
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Text = "",
+        TextSize = 12,
+        Font = FNT.B,
+        ClearTextOnFocus = false,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        Position = UDim2.new(1, -98, 0, 9),
+        Size = UDim2.fromOffset(82, 22),
+    }, row)
+    Bind(val, "TextColor3", "Accent")
 
     local bar = New("Frame", {
         Size = UDim2.new(1, -32, 0, 6),
@@ -2394,6 +2404,19 @@ local function Slider(page, opts)
             end
         end
     end
+
+    -- the value box is typeable: click it, type a number, press Enter
+    val.Focused:Connect(function()
+        val.Text = string.format("%g", value)
+    end)
+    val.FocusLost:Connect(function()
+        local cleaned = (string.gsub(val.Text, ",", "."))
+        local n = tonumber(string.match(cleaned, "%-?%d*%.?%d+"))
+        if n then
+            setValue(n, true)
+        end
+        show()
+    end)
 
     local dragging = false
     local function fromX(x)
@@ -3910,6 +3933,79 @@ Slider(Settings, {
         ApplyScale(true)
     end,
 })
+
+do
+    local row = Panel(Settings, UDim2.new(1, 0, 0, 62))
+    Register(row, "UI toggle key hotkey keybind open close")
+
+    local title = Text(row, "UI toggle key", 13, FNT.M, "Text")
+    title.Position = UDim2.fromOffset(16, 10)
+    title.Size = UDim2.new(1, -150, 0, 20)
+
+    local desc = Text(row, "Click, press a key. Esc cancels, Backspace clears", 12, FNT.R, "Sub")
+    desc.Position = UDim2.fromOffset(16, 33)
+    desc.Size = UDim2.new(1, -150, 0, 16)
+
+    local btn = New("TextButton", {
+        Size = UDim2.fromOffset(112, 30),
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -14, 0.5, 0),
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Text = "",
+    }, row)
+    Corner(btn, 8)
+    Bind(btn, "BackgroundColor3", "Surface2")
+    Bind(Stroke(btn, Theme.Accent, 1, 0.6), "Color", "Accent")
+
+    local lbl = Text(btn, "", 12, FNT.B, "Accent", Enum.TextXAlignment.Center)
+    lbl.Size = UDim2.fromScale(1, 1)
+
+    local capturing = false
+    local function show()
+        if capturing then
+            lbl.Text = "Press a key..."
+        elseif Config.UIToggleKey == "" then
+            lbl.Text = "None"
+        else
+            lbl.Text = Config.UIToggleKey
+        end
+    end
+    show()
+
+    btn.MouseButton1Click:Connect(function()
+        capturing = not capturing
+        show()
+    end)
+
+    Track(UIS.InputBegan:Connect(function(input, processed)
+        if input.UserInputType ~= Enum.UserInputType.Keyboard or input.KeyCode == Enum.KeyCode.Unknown then
+            return
+        end
+
+        if capturing then
+            capturing = false
+            if input.KeyCode == Enum.KeyCode.Backspace then
+                SetConfig("UIToggleKey", "")
+                Toast("UI toggle key cleared")
+            elseif input.KeyCode ~= Enum.KeyCode.Escape then
+                SetConfig("UIToggleKey", input.KeyCode.Name)
+                Toast("UI toggle key: " .. input.KeyCode.Name)
+            end
+            show()
+            return
+        end
+
+        if processed then
+            return
+        end
+        if Config.UIToggleKey ~= "" and input.KeyCode.Name == Config.UIToggleKey then
+            SetWindow(not Config.WindowVisible)
+        end
+    end))
+
+    Refreshers[#Refreshers + 1] = show
+end
 
 Section(Settings, "Theme presets")
 ThemeGrid(Settings)
